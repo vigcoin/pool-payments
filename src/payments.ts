@@ -45,42 +45,6 @@ export class Payments {
     }, this.config.payments.interval * 1000);
   }
 
-  public async getWorkerBalances() {
-
-    const keys = promisify(this.redis.keys).bind(this.redis);
-    const hget = promisify(this.redis.hget).bind(this.redis);
-    const workers = await keys([this.config.coin, 'workers', '*'].join(':'));
-
-    const balances: any = {};
-
-    for (const work of workers) {
-      const balance = await hget(work, 'balance');
-      const parts = work.splite(':');
-      const id = parts[parts.length - 1];
-      balances[id] = parseInt(balance) || 0
-    }
-
-    return balances;
-  }
-
-  public getPayments(balances: any) {
-    const payments: any = {};
-
-    for (const worker in balances) {
-      const balance = balances[worker];
-      if (balance >= this.config.payments.minPayment) {
-        const remainder = balance % this.config.payments.denomination;
-        let payout = balance - remainder;
-        if (payout < 0) continue;
-        if (payout >= this.config.payments.maxPayment) {
-          payout = this.config.payments.maxPayment;
-        }
-        payments[worker] = payout;
-      }
-    }
-    return payments;
-  }
-
   public async payWorkers(payments: any) {
     const hincrby = promisify(this.redis.hincrby).bind(this.redis);
     const zadd = promisify(this.redis.zadd).bind(this.redis);
@@ -106,23 +70,24 @@ export class Payments {
         && amount + commandAmount > this.config.payments.maxTransactionAmount) {
         amount = this.config.payments.maxTransactionAmount - commandAmount;
       }
+
       rpc.destinations.push({ amount, address: worker });
 
-
-      rpc.destinations.push({ amount: amount, address: worker });
       redis.push([[this.config.coin, 'workers', worker].join(':'), 'balance', -amount]);
       redis.push([[this.config.coin, 'workers', worker].join(':'), 'paid', amount]);
       totalAmount += amount;
 
       addresses++;
       commandAmount += amount;
-      if (addresses >= this.config.payments.maxAddresses ||
-        (this.config.payments.maxTransactionAmount &&
-          commandAmount >= this.config.payments.maxTransactionAmount)
-      ) {
+
+      let exceededAddresses = addresses >= this.config.payments.maxAddresses;
+      let exceededAmount = (this.config.payments.maxTransactionAmount &&
+        commandAmount >= this.config.payments.maxTransactionAmount);
+
+
+      if (exceededAddresses || exceededAmount) {
         try {
           let transfer = await this.req.wallet('', 'transfter', rpc);
-
           for (let r of redis) {
             await hincrby.apply(this.redis, r);
           }
@@ -150,11 +115,45 @@ export class Payments {
           this.logger.append('error', 'payments', 'Error with send_transaction RPC request to wallet daemon %j', [e]);
           this.logger.append('error', 'payments', 'Payments failed to send to %j', rpc.destinations);
         }
-
-
       }
       addresses = 0;
       commandAmount = 0;
     }
   }
+
+  public getPayments(balances: any) {
+    const payments: any = {};
+    for (const worker in balances) {
+      const balance = balances[worker];
+      if (balance >= this.config.payments.minPayment) {
+        const remainder = balance % this.config.payments.denomination;
+        let payout = balance - remainder;
+        if (payout < 0) continue;
+        if (payout >= this.config.payments.maxPayment) {
+          payout = this.config.payments.maxPayment;
+        }
+        payments[worker] = payout;
+      }
+    }
+    return payments;
+  }
+
+  public async getWorkerBalances() {
+
+    const keys = promisify(this.redis.keys).bind(this.redis);
+    const hget = promisify(this.redis.hget).bind(this.redis);
+    const workers = await keys([this.config.coin, 'workers', '*'].join(':'));
+
+    const balances: any = {};
+
+    for (const work of workers) {
+      const balance = await hget(work, 'balance');
+      const parts = work.split(':');
+      const id = parts[parts.length - 1];
+      balances[id] = parseInt(balance) || 0
+    }
+
+    return balances;
+  }
+
 }
